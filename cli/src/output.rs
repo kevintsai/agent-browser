@@ -3768,12 +3768,18 @@ fn print_screenshot_diff(data: &serde_json::Map<String, serde_json::Value>) {
 /// that PATH is the fork, not a stray official 0.32.3.
 pub const FORK_VERSION_MARKER: &str = "+fleetmux";
 
+/// The fork build id: `CARGO_PKG_VERSION` + [`FORK_VERSION_MARKER`] (e.g. `0.32.3+fleetmux`). Single source of
+/// truth shared by `--version` (below) and the `<session>.build` sidecar the daemon writes (`native/daemon.rs`).
+/// fleetmux reads that sidecar (filesystem-only, no daemon spawn) and compares it to the token it parses from
+/// `agent-browser --version`; a live daemon whose build differs (or lacks the sidecar — a pre-fork / stray
+/// official 0.32.3 leftover) is reaped + respawned on fleetmux startup. Deliberately DISTINCT from
+/// `.version`/`CARGO_PKG_VERSION`, which must stay clean semver for the daemon↔CLI wire-compat check.
+pub fn full_version() -> String {
+    format!("{}{}", env!("CARGO_PKG_VERSION"), FORK_VERSION_MARKER)
+}
+
 pub fn print_version() {
-    println!(
-        "agent-browser {}{}",
-        env!("CARGO_PKG_VERSION"),
-        FORK_VERSION_MARKER
-    );
+    println!("agent-browser {}", full_version());
 }
 
 #[cfg(test)]
@@ -3783,6 +3789,16 @@ mod tests {
         OutputOptions,
     };
     use serde_json::json;
+
+    #[test]
+    fn full_version_is_semver_plus_fork_marker() {
+        // The `.build` sidecar (native/daemon.rs) and `--version` MUST agree — both go through full_version().
+        // fleetmux's stale-daemon detection compares this exact token to the `.build` file contents.
+        let v = super::full_version();
+        assert!(v.starts_with(env!("CARGO_PKG_VERSION")), "must lead with clean semver: {v}");
+        assert!(v.ends_with(super::FORK_VERSION_MARKER), "must carry the fork marker: {v}");
+        assert_eq!(v, format!("{}+fleetmux", env!("CARGO_PKG_VERSION")));
+    }
 
     #[test]
     fn test_format_stream_status_text_for_enabled_stream() {

@@ -159,6 +159,8 @@ pub fn cleanup_stale_files(session: &str) {
     let _ = fs::remove_file(&pid_path);
     let version_path = get_version_path(session);
     let _ = fs::remove_file(&version_path);
+    let build_path = get_socket_dir().join(format!("{}.build", session));
+    let _ = fs::remove_file(&build_path);
     let config_path = get_config_path(session);
     let _ = fs::remove_file(&config_path);
     let stream_path = get_socket_dir().join(format!("{}.stream", session));

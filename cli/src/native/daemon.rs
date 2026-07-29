@@ -69,6 +69,12 @@ pub async fn run_daemon(session: &str) {
     let version_path = socket_dir.join(format!("{}.version", session));
     let _ = fs::write(&version_path, env!("CARGO_PKG_VERSION"));
 
+    // Fork build id sidecar (e.g. `0.32.3+fleetmux`) — SEPARATE from `.version` (clean semver, wire-compat).
+    // fleetmux reads this filesystem-only to detect a daemon spawned from a stale/non-fork build and
+    // reap+respawn it on startup. See crate::output::full_version.
+    let build_path = socket_dir.join(format!("{}.build", session));
+    let _ = fs::write(&build_path, crate::output::full_version());
+
     // On Unix the daemon listens on a Unix domain socket; on Windows it uses
     // TCP, so there is no .sock file — only a .port file written by the server.
     let socket_path = socket_dir.join(format!("{}.sock", session));
@@ -153,6 +159,7 @@ pub async fn run_daemon(session: &str) {
     }
     let _ = fs::remove_file(&pid_path);
     let _ = fs::remove_file(&version_path);
+    let _ = fs::remove_file(&build_path);
     let _ = fs::remove_file(&stream_path);
     let _ = fs::remove_file(socket_dir.join(format!("{}.engine", session)));
     let _ = fs::remove_file(socket_dir.join(format!("{}.provider", session)));

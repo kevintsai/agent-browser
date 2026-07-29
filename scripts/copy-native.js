@@ -4,7 +4,7 @@
  * Copies the compiled Rust binary to bin/ with platform-specific naming
  */
 
-import { copyFileSync, existsSync, mkdirSync } from 'fs';
+import { copyFileSync, existsSync, mkdirSync, rmSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { platform, arch } from 'os';
@@ -32,5 +32,10 @@ if (!existsSync(binDir)) {
   mkdirSync(binDir, { recursive: true });
 }
 
+// Unlink first so the copy lands on a FRESH inode. Overwriting a code-signed Mach-O in place (same inode)
+// leaves macOS serving a stale signature from its per-(dev,inode) cache, and the kernel then SIGKILLs the
+// binary on exec ("killed: 9", 0 output) even though `codesign --verify` reports it valid on disk — which
+// silently breaks `agent-browser` and any tool that spawns it (e.g. fleetmux's FLEETMUX_AGENT_BROWSER_BIN).
+rmSync(targetPath, { force: true });
 copyFileSync(sourcePath, targetPath);
 console.log(`✓ Copied native binary to ${targetPath}`);

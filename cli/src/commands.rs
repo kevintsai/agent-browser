@@ -1283,13 +1283,16 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
             }
             Some("disable") => Ok(json!({ "id": id, "action": "stream_disable" })),
             Some("status") => Ok(json!({ "id": id, "action": "stream_status" })),
+            // Force one screencast frame of the current (settled) viewport — un-blank a static page that
+            // stopped emitting change-driven screencast frames. No-op when not streaming/screencasting.
+            Some("refresh") => Ok(json!({ "id": id, "action": "stream_refresh" })),
             Some(sub) => Err(ParseError::UnknownSubcommand {
                 subcommand: sub.to_string(),
-                valid_options: &["enable", "disable", "status"],
+                valid_options: &["enable", "disable", "status", "refresh"],
             }),
             None => Err(ParseError::MissingArguments {
                 context: "stream".to_string(),
-                usage: "stream <enable|disable|status>",
+                usage: "stream <enable|disable|status|refresh>",
             }),
         },
 
@@ -5085,6 +5088,22 @@ mod tests {
     fn test_stream_status() {
         let cmd = parse_command(&args("stream status"), &default_flags()).unwrap();
         assert_eq!(cmd["action"], "stream_status");
+    }
+
+    #[test]
+    fn test_stream_refresh() {
+        let cmd = parse_command(&args("stream refresh"), &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "stream_refresh");
+    }
+
+    #[test]
+    fn test_stream_unknown_subcommand_lists_refresh() {
+        // The error's valid-options must advertise `refresh` (kept in sync with the parser).
+        let err = parse_command(&args("stream bogus"), &default_flags()).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("refresh"),
+            "unknown-subcommand error should list refresh: {err:?}"
+        );
     }
 
     #[test]

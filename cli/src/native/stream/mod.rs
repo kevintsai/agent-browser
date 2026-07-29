@@ -105,6 +105,13 @@ impl StreamServer {
         *self.screencasting.lock().await
     }
 
+    /// Whether at least one viewport-stream client is currently connected. Set synchronously on WS
+    /// connect/disconnect (unlike the `screencasting` flag, which the CDP loop sets asynchronously and thus
+    /// lags right after a client attaches) — the reliable "is anyone watching?" gate for on-navigate repaint.
+    pub async fn has_clients(&self) -> bool {
+        *self.client_count.lock().await > 0
+    }
+
     /// Update the stored viewport dimensions and restart the active screencast (if any)
     /// so frames are captured at the new size.
     pub async fn set_viewport(&self, width: u32, height: u32) {

@@ -3761,8 +3761,19 @@ fn print_screenshot_diff(data: &serde_json::Map<String, serde_json::Value>) {
     );
 }
 
+/// Build marker for the fleetmux self-maintained fork (byte-identical to the official release except the
+/// `stream refresh` / navigate-repaint patch). **Human-facing `--version` only** — the internal
+/// `CARGO_PKG_VERSION` stays clean semver (daemon↔CLI compat check in `connection.rs`, the `.version` file,
+/// and wire/MCP `version` JSON all rely on an exact match). Lets `agent-browser --version` reveal at a glance
+/// that PATH is the fork, not a stray official 0.32.3.
+pub const FORK_VERSION_MARKER: &str = "+fleetmux";
+
 pub fn print_version() {
-    println!("agent-browser {}", env!("CARGO_PKG_VERSION"));
+    println!(
+        "agent-browser {}{}",
+        env!("CARGO_PKG_VERSION"),
+        FORK_VERSION_MARKER
+    );
 }
 
 #[cfg(test)]

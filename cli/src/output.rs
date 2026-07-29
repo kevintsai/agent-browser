@@ -3118,6 +3118,7 @@ Usage:
   agent-browser stream enable [--port <port>]
   agent-browser stream disable
   agent-browser stream status
+  agent-browser stream refresh
 
 Enables or disables the session-scoped WebSocket stream server without restarting
 an already-running daemon. If --port is omitted, agent-browser binds an
@@ -3142,6 +3143,9 @@ Notes:
     frames already handed to the transport are delivered in order.
   - Both settings can be declared on the URL instead, which is the only way
     to cover the opening frame: ws://127.0.0.1:<port>/?pacing=ack&maxFps=10
+  - 'stream refresh' forces one frame of the current viewport, so a static page
+    that rendered once and stopped emitting change-driven screencast frames
+    (and thus shows blank) repaints on demand. No-op when not streaming.
   - 'screencast_start' and 'screencast_stop' still control explicit CDP screencasts.
   - Streaming is always enabled. Set AGENT_BROWSER_STREAM_PORT to bind to a
     specific port instead of the default OS-assigned port.
@@ -3155,6 +3159,7 @@ Examples:
   agent-browser stream enable
   agent-browser stream enable --port 9223
   agent-browser stream disable
+  agent-browser stream refresh
 "##
         }
 

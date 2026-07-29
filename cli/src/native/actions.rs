@@ -2269,6 +2269,7 @@ fn skip_launch_action(action: &str) -> bool {
             | "stream_enable"
             | "stream_disable"
             | "stream_status"
+            | "stream_refresh"
             | "session_info"
             | "webmcp_result"
             | "webmcp_cancel"
@@ -2747,6 +2748,7 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         "webmcp_invoke" => handle_webmcp_invoke(cmd, state).await,
         "webmcp_result" => handle_webmcp_result(cmd, state).await,
         "webmcp_cancel" => handle_webmcp_cancel(cmd, state).await,
+        "stream_refresh" => handle_stream_refresh(state).await,
         "waitforurl" => handle_waitforurl(cmd, state).await,
         "waitforloadstate" => handle_waitforloadstate(cmd, state).await,
         "waitforfunction" => handle_waitforfunction(cmd, state).await,
@@ -2895,8 +2897,38 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
             let tabs = mgr.tab_list();
             let session_id = mgr.active_session_id().ok().map(|s| s.to_string());
             server
-                .bind_cdp_session_and_broadcast_tabs(session_id, &tabs)
+                .bind_cdp_session_and_broadcast_tabs(session_id.clone(), &tabs)
                 .await;
+
+            // Force a repaint so a static page (rendered once → no further screencast frames) actually
+            // appears after navigation, instead of staying blank until the user interacts (the
+            // change-driven-screencast limitation; headless doesn't tick the compositor on its own). Done
+            // OFF the locked command path and after a short settle delay — at navigation-complete the new
+            // page's compositor frame isn't committed yet, so an immediate startScreencast captures nothing
+            // (why the inline attempt saw 0 frames). A couple of spaced shots cover variable settle timing.
+            if matches!(
+                action,
+                "tab_new" | "tab_switch" | "tab_close" | "open" | "navigate"
+            ) {
+                if let Some(sid) = session_id {
+                    let client = std::sync::Arc::clone(&mgr.client);
+                    let server = std::sync::Arc::clone(server);
+                    tokio::spawn(async move {
+                        // A few spaced shots: the new page's compositor frame commits some tens-to-hundreds of
+                        // ms after navigation-complete, and headless doesn't tick on its own — cover the range.
+                        // Gate on a connected viewer (has_clients, set synchronously on WS connect) rather than
+                        // the screencasting flag, which the CDP loop sets asynchronously and lags at this point.
+                        for delay_ms in [200u64, 600, 1200] {
+                            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                            if !server.has_clients().await {
+                                continue; // nobody watching right now → skip (resume if a client attaches)
+                            }
+                            let (vw, vh) = server.viewport().await;
+                            let _ = force_repaint(&client, &sid, vw, vh).await;
+                        }
+                    });
+                }
+            }
         }
     }
 
@@ -8550,6 +8582,44 @@ async fn handle_webmcp_cancel(cmd: &Value, state: &mut DaemonState) -> Result<Va
     wait_for_webmcp_invocation(state, invocation_id, state.timeout_ms(cmd)).await
 }
 
+/// Force a fresh screencast frame of the CURRENT (settled) viewport by re-subscribing the CDP screencast
+/// (stop → start). The viewport stream is a change-driven `Page.startScreencast`: a page that renders once and
+/// then stays static (localhost, a local file, a settled SPA) emits no further frames, so it shows blank until
+/// something repaints. A fresh `startScreencast` re-emits an INITIAL frame of the current viewport, which the
+/// `cdp_event_loop` rebroadcasts. The `stop` first is essential: a bare re-`startScreencast` on an already-
+/// casting page is deduped by Chrome (which is exactly why a plain navigate to a static page doesn't repaint).
+async fn force_repaint(
+    client: &CdpClient,
+    session_id: &str,
+    vw: u32,
+    vh: u32,
+) -> Result<(), String> {
+    let _ = stream::stop_screencast(client, session_id).await;
+    stream::start_screencast(client, session_id, "jpeg", 80, vw as i32, vh as i32).await
+}
+
+/// `stream_refresh`: on-demand force one frame (fleetmux `browser-pane.refresh-frame` → panel `r`). No-op
+/// (reports `refreshed: false` + reason) when there is no stream / no browser / not currently screencasting —
+/// crucially it does NOT auto-launch or resurrect anything.
+async fn handle_stream_refresh(state: &DaemonState) -> Result<Value, String> {
+    let Some(server) = state.stream_server.as_ref() else {
+        return Ok(json!({ "refreshed": false, "reason": "streaming not enabled" }));
+    };
+    let Some(mgr) = state.browser.as_ref() else {
+        return Ok(json!({ "refreshed": false, "reason": "browser not launched" }));
+    };
+    if !mgr.is_connection_alive().await {
+        return Ok(json!({ "refreshed": false, "reason": "browser not connected" }));
+    }
+    if !(state.screencasting || server.is_screencasting().await) {
+        return Ok(json!({ "refreshed": false, "reason": "not screencasting" }));
+    }
+    let session_id = mgr.active_session_id()?.to_string();
+    let (vw, vh) = server.viewport().await;
+    force_repaint(&mgr.client, &session_id, vw, vh).await?;
+    Ok(json!({ "refreshed": true }))
+}
+
 // ---------------------------------------------------------------------------
 // Screencast handlers
 // ---------------------------------------------------------------------------
@@ -13449,6 +13519,35 @@ printf '%s' '{"protocol":"agent-browser.plugin.v1","success":true,"data":{}}'
 
         assert!(state.iframe_sessions.is_empty());
         assert!(state.active_iframe_sessions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_stream_refresh_no_ops_without_stream_or_browser() {
+        // No stream server → graceful no-op (never errors, never auto-launches). The panel/CLI treats a
+        // `refreshed: false` as "nothing to repaint", not a failure. See handle_stream_refresh.
+        let no_stream = DaemonState::new();
+        let r = handle_stream_refresh(&no_stream)
+            .await
+            .expect("refresh must not error");
+        assert_eq!(r["refreshed"], false);
+        assert_eq!(r["reason"], "streaming not enabled");
+
+        // Stream enabled but no browser attached → still a no-op (guards on a live browser connection).
+        let guard = EnvGuard::new(&["AGENT_BROWSER_SOCKET_DIR", "AGENT_BROWSER_SESSION"]);
+        let socket_dir = unique_socket_dir("stream-refresh");
+        fs::create_dir_all(&socket_dir).expect("socket dir should be created");
+        guard.set("AGENT_BROWSER_SOCKET_DIR", socket_dir.to_str().unwrap());
+        guard.set("AGENT_BROWSER_SESSION", "stream-refresh-session");
+        let mut state = DaemonState::new();
+        handle_stream_enable(&json!({ "port": 0 }), &mut state)
+            .await
+            .expect("enable should succeed");
+        let r = handle_stream_refresh(&state)
+            .await
+            .expect("refresh must not error");
+        assert_eq!(r["refreshed"], false);
+        assert_eq!(r["reason"], "browser not launched");
+        let _ = handle_stream_disable(&mut state).await;
     }
 
     #[tokio::test]

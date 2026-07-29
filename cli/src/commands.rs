@@ -80,6 +80,7 @@ pub fn is_top_level_command(value: &str) -> bool {
             | "back"
             | "forward"
             | "reload"
+            | "stop"
             | "read"
             | "click"
             | "dblclick"
@@ -403,7 +404,13 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
         }
         "back" => Ok(json!({ "id": id, "action": "back" })),
         "forward" => Ok(json!({ "id": id, "action": "forward" })),
-        "reload" => Ok(json!({ "id": id, "action": "reload" })),
+        // `reload [--hard]`: `--hard` bypasses the cache (Page.reload{ignoreCache:true}). fleetmux ⌘R / ⌘⇧R.
+        "reload" => {
+            let hard = rest.contains(&"--hard");
+            Ok(json!({ "id": id, "action": "reload", "hard": hard }))
+        }
+        // `stop`: abort the current page load (Page.stopLoading). fleetmux ⌘.
+        "stop" => Ok(json!({ "id": id, "action": "stop" })),
         "read" => parse_read(&rest, &id, flags),
 
         // === Core Actions ===
@@ -3901,6 +3908,22 @@ mod tests {
     fn test_reload() {
         let cmd = parse_command(&args("reload"), &default_flags()).unwrap();
         assert_eq!(cmd["action"], "reload");
+        assert_eq!(cmd["hard"], false, "plain reload does not bypass the cache");
+    }
+
+    #[test]
+    fn test_reload_hard() {
+        // `reload --hard` → Page.reload{ignoreCache:true} (fleetmux ⌘⇧R).
+        let cmd = parse_command(&args("reload --hard"), &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "reload");
+        assert_eq!(cmd["hard"], true);
+    }
+
+    #[test]
+    fn test_stop() {
+        // `stop` → Page.stopLoading (fleetmux ⌘.).
+        let cmd = parse_command(&args("stop"), &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "stop");
     }
 
     // === Core Actions ===

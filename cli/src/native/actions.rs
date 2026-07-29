@@ -2262,7 +2262,8 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         "ischecked" => handle_ischecked(cmd, state).await,
         "back" => handle_back(state).await,
         "forward" => handle_forward(state).await,
-        "reload" => handle_reload(state).await,
+        "reload" => handle_reload(cmd, state).await,
+        "stop" => handle_stop(state).await,
         "cookies_get" => handle_cookies_get(cmd, state).await,
         "cookies_set" => handle_cookies_set(cmd, state).await,
         "cookies_clear" => handle_cookies_clear(state).await,
@@ -5181,9 +5182,12 @@ async fn handle_forward(state: &mut DaemonState) -> Result<Value, String> {
     Ok(json!({ "url": url }))
 }
 
-async fn handle_reload(state: &mut DaemonState) -> Result<Value, String> {
+async fn handle_reload(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
+    // `--hard` → Page.reload{ignoreCache:true} (cache-bypass, like Chrome ⌘⇧R). Default is a normal reload.
+    let hard = cmd.get("hard").and_then(|v| v.as_bool()).unwrap_or(false);
     if let Some(ref wb) = state.webdriver_backend {
         if state.browser.is_none() {
+            // WebDriver backend has no cache-bypass reload; `hard` degrades to a normal reload.
             wb.reload().await?;
             tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
             let url = wb.get_url().await.unwrap_or_default();
@@ -5194,8 +5198,13 @@ async fn handle_reload(state: &mut DaemonState) -> Result<Value, String> {
     let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
     let session_id = mgr.active_session_id()?.to_string();
 
+    let reload_params = if hard {
+        Some(json!({ "ignoreCache": true }))
+    } else {
+        None
+    };
     mgr.client
-        .send_command_no_params("Page.reload", Some(&session_id))
+        .send_command("Page.reload", reload_params, Some(&session_id))
         .await?;
 
     let mut rx = mgr.client.subscribe();
@@ -5218,6 +5227,31 @@ async fn handle_reload(state: &mut DaemonState) -> Result<Value, String> {
 
     let url = mgr.get_url().await.unwrap_or_default();
     state.ref_map.clear();
+    Ok(json!({ "url": url }))
+}
+
+/// `stop`: abort the in-flight page load (CDP Page.stopLoading, like the browser's stop button / Esc).
+/// fleetmux ⌘.. Returns immediately — nothing to wait for.
+async fn handle_stop(state: &mut DaemonState) -> Result<Value, String> {
+    // WebDriver backend has no stop-loading; best-effort no-op when it's the active backend.
+    if state.webdriver_backend.is_some() && state.browser.is_none() {
+        let url = state
+            .webdriver_backend
+            .as_ref()
+            .unwrap()
+            .get_url()
+            .await
+            .unwrap_or_default();
+        return Ok(json!({ "url": url }));
+    }
+    let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
+    let session_id = mgr.active_session_id()?.to_string();
+    mgr.client
+        .send_command_no_params("Page.stopLoading", Some(&session_id))
+        .await?;
+    // Return `{url}` like reload/back/forward — a bare `{stopped:true}` collides with the recording-restart
+    // output formatter (output.rs). fleetmux only checks exit status, but keep the CLI human output sane.
+    let url = mgr.get_url().await.unwrap_or_default();
     Ok(json!({ "url": url }))
 }
 
@@ -7129,7 +7163,7 @@ async fn handle_vitals(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
         let mgr = state.browser.as_mut().ok_or("Browser not launched")?;
         let _ = mgr.navigate(&url, WaitUntil::Load).await?;
     } else {
-        handle_reload(state).await?;
+        handle_reload(&json!({}), state).await?; // normal reload (no cache bypass)
     }
 
     // Give layout shifts and React effects a chance to settle.

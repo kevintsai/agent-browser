@@ -1270,32 +1270,20 @@ impl BrowserManager {
                 .await
             {
                 if let Some(window_id) = window_info.get("windowId").and_then(|v| v.as_i64()) {
-                    let contents_size = json!({
-                        "windowId": window_id,
-                        "width": width,
-                        "height": height,
-                    });
                     if let Err(e) = self
                         .client
-                        .send_command("Browser.setContentsSize", Some(contents_size.clone()), None)
+                        .send_command(
+                            "Browser.setContentsSize",
+                            Some(json!({
+                                "windowId": window_id,
+                                "width": width,
+                                "height": height,
+                            })),
+                            None,
+                        )
                         .await
                     {
                         eprintln!("Browser.setContentsSize failed (experimental CDP): {e}");
-                    }
-                    // The first setContentsSize after launch/override acks before the content SURFACE
-                    // (what the screencast actually captures) finishes resizing — it settles ~chrome-height
-                    // short (e.g. 838 -> 749) a few frames later. Whoever restarts the screencast next
-                    // (handle_viewport -> server.set_viewport) would then capture the still-short surface
-                    // and lock the stream there, so a single `set viewport` yields a too-short frame until
-                    // a second identical call lands against the settled window. Settle + re-apply here so
-                    // one call converges (automates the proven manual second-call workaround).
-                    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
-                    if let Err(e) = self
-                        .client
-                        .send_command("Browser.setContentsSize", Some(contents_size), None)
-                        .await
-                    {
-                        eprintln!("Browser.setContentsSize (settle re-apply) failed: {e}");
                     }
                 }
             }

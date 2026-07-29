@@ -3762,17 +3762,11 @@ fn print_screenshot_diff(data: &serde_json::Map<String, serde_json::Value>) {
 }
 
 /// Build marker for the fleetmux self-maintained fork (byte-identical to the official release except the
-/// fleetmux patches: `stream refresh` / navigate-repaint, and the two-shot `Browser.setContentsSize` viewport
-/// settle in `native/browser.rs`). **Human-facing `--version` only** — the internal `CARGO_PKG_VERSION` stays
-/// clean semver (daemon↔CLI compat check in `connection.rs`, the `.version` file, and wire/MCP `version` JSON
-/// all rely on an exact match). Lets `agent-browser --version` reveal at a glance that PATH is the fork, not a
-/// stray official 0.32.3.
-///
-/// **Bump the trailing `.N` on every fork-behavior change** so fleetmux's stale-daemon detection (ADR 0027 §8)
-/// sees the running daemons' old `.build` sidecar as outdated and reaps+respawns them onto the new binary on
-/// the next fleetmux startup — otherwise a same-marker rebuild leaves live browser-panes on the old code until
-/// each is manually reopened. `.2` = adds the viewport setContentsSize-settle patch.
-pub const FORK_VERSION_MARKER: &str = "+fleetmux.2";
+/// `stream refresh` / navigate-repaint patch). **Human-facing `--version` only** — the internal
+/// `CARGO_PKG_VERSION` stays clean semver (daemon↔CLI compat check in `connection.rs`, the `.version` file,
+/// and wire/MCP `version` JSON all rely on an exact match). Lets `agent-browser --version` reveal at a glance
+/// that PATH is the fork, not a stray official 0.32.3.
+pub const FORK_VERSION_MARKER: &str = "+fleetmux";
 
 /// The fork build id: `CARGO_PKG_VERSION` + [`FORK_VERSION_MARKER`] (e.g. `0.32.3+fleetmux`). Single source of
 /// truth shared by `--version` (below) and the `<session>.build` sidecar the daemon writes (`native/daemon.rs`).
@@ -3803,15 +3797,7 @@ mod tests {
         let v = super::full_version();
         assert!(v.starts_with(env!("CARGO_PKG_VERSION")), "must lead with clean semver: {v}");
         assert!(v.ends_with(super::FORK_VERSION_MARKER), "must carry the fork marker: {v}");
-        assert!(
-            super::FORK_VERSION_MARKER.starts_with("+fleetmux"),
-            "marker must stay under the +fleetmux namespace (bump the trailing .N per change): {}",
-            super::FORK_VERSION_MARKER
-        );
-        assert_eq!(
-            v,
-            format!("{}{}", env!("CARGO_PKG_VERSION"), super::FORK_VERSION_MARKER)
-        );
+        assert_eq!(v, format!("{}+fleetmux", env!("CARGO_PKG_VERSION")));
     }
 
     #[test]

@@ -3766,7 +3766,7 @@ fn print_screenshot_diff(data: &serde_json::Map<String, serde_json::Value>) {
 /// `CARGO_PKG_VERSION` stays clean semver (daemon↔CLI compat check in `connection.rs`, the `.version` file,
 /// and wire/MCP `version` JSON all rely on an exact match). Lets `agent-browser --version` reveal at a glance
 /// that PATH is the fork, not a stray official 0.32.3.
-pub const FORK_VERSION_MARKER: &str = "+fleetmux.2";
+pub const FORK_VERSION_MARKER: &str = "+fleetmux.3";
 
 /// The fork build id: `CARGO_PKG_VERSION` + [`FORK_VERSION_MARKER`] (e.g. `0.32.3+fleetmux`). Single source of
 /// truth shared by `--version` (below) and the `<session>.build` sidecar the daemon writes (`native/daemon.rs`).

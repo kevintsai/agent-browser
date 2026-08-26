@@ -276,6 +276,40 @@ async fn handle_ws_client(
     client_notify.notify_one();
 }
 
+/// Build the `Input.dispatchKeyEvent` params for a viewport-stream `input_keyboard` message.
+///
+/// Optional string fields (`key` / `code` / `text`) are OMITTED when the client doesn't send them,
+/// never forwarded as `null`: CDP treats a null string as a type error and rejects the WHOLE
+/// dispatch, so a single missing field makes the key vanish instead of degrading. Writing
+/// `parsed.get("code")` straight into `json!` is exactly that trap — a `None` serializes to `null`.
+fn key_dispatch_params(parsed: &Value) -> Value {
+    let mut params = json!({
+        "type": parsed.get("eventType").and_then(|v| v.as_str()).unwrap_or("keyDown"),
+        "windowsVirtualKeyCode": parsed.get("windowsVirtualKeyCode").and_then(|v| v.as_i64()).unwrap_or(0),
+        "modifiers": parsed.get("modifiers").and_then(|v| v.as_i64()).unwrap_or(0),
+    });
+    if let Some(obj) = params.as_object_mut() {
+        for field in ["key", "code", "text"] {
+            match parsed.get(field) {
+                Some(v) if !v.is_null() => {
+                    obj.insert(field.to_string(), v.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+    params
+}
+
+/// A rejected input dispatch used to be dropped on the floor (`let _ = ...`), so a malformed payload
+/// looked like "that key just doesn't work" with no error anywhere along the chain. One line of noise
+/// beats a silent no-op.
+fn report_cdp_rejection(what: &str, result: Result<Value, String>) {
+    if let Err(e) = result {
+        eprintln!("CDP rejected {what}: {e}");
+    }
+}
+
 async fn handle_client_message(msg: &str, client: &CdpClient, session_id: Option<&str>) {
     let parsed: Value = match serde_json::from_str(msg) {
         Ok(v) => v,
@@ -286,7 +320,7 @@ async fn handle_client_message(msg: &str, client: &CdpClient, session_id: Option
 
     match msg_type {
         "input_mouse" => {
-            let _ = client
+            let result = client
                 .send_command(
                     "Input.dispatchMouseEvent",
                     Some(json!({
@@ -302,25 +336,20 @@ async fn handle_client_message(msg: &str, client: &CdpClient, session_id: Option
                     session_id,
                 )
                 .await;
+            report_cdp_rejection("input_mouse", result);
         }
         "input_keyboard" => {
-            let _ = client
+            let result = client
                 .send_command(
                     "Input.dispatchKeyEvent",
-                    Some(json!({
-                        "type": parsed.get("eventType").and_then(|v| v.as_str()).unwrap_or("keyDown"),
-                        "key": parsed.get("key"),
-                        "code": parsed.get("code"),
-                        "text": parsed.get("text"),
-                        "windowsVirtualKeyCode": parsed.get("windowsVirtualKeyCode").and_then(|v| v.as_i64()).unwrap_or(0),
-                        "modifiers": parsed.get("modifiers").and_then(|v| v.as_i64()).unwrap_or(0),
-                    })),
+                    Some(key_dispatch_params(&parsed)),
                     session_id,
                 )
                 .await;
+            report_cdp_rejection("input_keyboard", result);
         }
         "input_touch" => {
-            let _ = client
+            let result = client
                 .send_command(
                     "Input.dispatchTouchEvent",
                     Some(json!({
@@ -331,8 +360,79 @@ async fn handle_client_message(msg: &str, client: &CdpClient, session_id: Option
                     session_id,
                 )
                 .await;
+            report_cdp_rejection("input_touch", result);
         }
         "status" => {}
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_params_omit_absent_optional_fields_instead_of_sending_null() {
+        // The regression: a client that can't resolve a DOM `code` (punctuation, keypad, F keys)
+        // used to get `"code": null`, and CDP rejected the whole dispatch — the key just vanished.
+        let params = key_dispatch_params(&json!({
+            "type": "input_keyboard",
+            "eventType": "keyDown",
+            "key": "?",
+            "text": "?",
+            "modifiers": 8,
+        }));
+        let obj = params.as_object().expect("params object");
+        assert!(
+            !obj.contains_key("code"),
+            "absent field must be omitted, not null: {params}"
+        );
+        assert_eq!(obj.get("key"), Some(&json!("?")));
+        assert_eq!(obj.get("text"), Some(&json!("?")));
+        assert_eq!(obj.get("modifiers"), Some(&json!(8)));
+        assert_eq!(
+            obj.get("eventType"),
+            None,
+            "eventType is remapped to `type`"
+        );
+        assert_eq!(obj.get("type"), Some(&json!("keyDown")));
+    }
+
+    #[test]
+    fn key_params_drop_explicit_nulls_too() {
+        let params = key_dispatch_params(&json!({
+            "key": "?", "code": Value::Null, "text": "?",
+        }));
+        let obj = params.as_object().expect("params object");
+        assert!(
+            !obj.contains_key("code"),
+            "explicit null must be dropped: {params}"
+        );
+    }
+
+    #[test]
+    fn key_params_forward_the_fields_that_are_present() {
+        let params = key_dispatch_params(&json!({
+            "eventType": "keyUp",
+            "key": "a", "code": "KeyA", "text": "a",
+            "windowsVirtualKeyCode": 65, "modifiers": 0,
+        }));
+        assert_eq!(
+            params,
+            json!({
+                "type": "keyUp",
+                "key": "a", "code": "KeyA", "text": "a",
+                "windowsVirtualKeyCode": 65, "modifiers": 0,
+            })
+        );
+    }
+
+    #[test]
+    fn key_params_default_the_non_optional_fields() {
+        let params = key_dispatch_params(&json!({}));
+        assert_eq!(
+            params,
+            json!({ "type": "keyDown", "windowsVirtualKeyCode": 0, "modifiers": 0 })
+        );
     }
 }

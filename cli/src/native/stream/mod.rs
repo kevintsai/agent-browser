@@ -9,6 +9,7 @@ pub use cdp_loop::{ack_screencast_frame, start_screencast, stop_screencast};
 pub use dashboard::{
     is_valid_dashboard_access_token, normalize_dashboard_allowed_origins, run_dashboard_server,
 };
+pub use capture_dims as capture_dims_for;
 
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -153,6 +154,25 @@ impl IdleActivity {
     }
 }
 
+/// Screencast capture size in DEVICE pixels for a CSS viewport of `width`x`height` shown at `scale`.
+///
+/// `Page.startScreencast`'s `maxWidth`/`maxHeight` bound the captured surface, which the compositor renders
+/// at its device scale factor times the CSS viewport. Passing the CSS size caps a 2x capture back down to
+/// 1x, so a Retina viewer receives a half-resolution image and upscales it — sharp text turns soft. A
+/// non-finite or non-positive scale falls back to 1x rather than producing a degenerate cap.
+///
+/// **The cap alone changes nothing.** It only stops Chrome shrinking what the compositor drew; whether the
+/// compositor draws at 2x is decided by `--force-device-scale-factor` at browser launch. Raising the cap
+/// without that flag is what an earlier attempt measured as "screencast cannot exceed CSS pixels".
+/// `Browser.setContentsSize` stays in CSS pixels — feeding it device pixels makes the surface twice the
+/// size it should be, and the page renders into its top-left corner.
+pub fn capture_dims(width: u32, height: u32, scale: f64) -> (u32, u32) {
+    let s = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    let w = ((width as f64) * s).round().max(1.0) as u32;
+    let h = ((height as f64) * s).round().max(1.0) as u32;
+    (w, h)
+}
+
 /// Frame metadata from CDP Page.screencastFrame events.
 #[derive(Debug, Clone)]
 pub struct FrameMetadata {
@@ -197,6 +217,11 @@ pub struct StreamServer {
     screencasting: Arc<Mutex<bool>>,
     viewport_width: Arc<Mutex<u32>>,
     viewport_height: Arc<Mutex<u32>>,
+    /// Device pixel ratio the screencast captures at (CDP `deviceScaleFactor`). The viewport above is in
+    /// CSS px; the captured surface is `viewport * scale`, so a 2x (Retina) client must cap the screencast
+    /// at the DEVICE pixel size or Chrome downscales the capture back to 1x and the client upscales a
+    /// blurry image. 1.0 = classic behaviour.
+    viewport_scale: Arc<Mutex<f64>>,
     last_tabs: Arc<RwLock<Vec<Value>>>,
     last_engine: Arc<RwLock<String>>,
     recording: Arc<Mutex<bool>>,
@@ -261,17 +286,26 @@ impl StreamServer {
 
     /// Update the stored viewport dimensions and restart the active screencast (if any)
     /// so frames are captured at the new size.
-    pub async fn set_viewport(&self, width: u32, height: u32) {
+    pub async fn set_viewport(&self, width: u32, height: u32, scale: f64) {
         let mut vw = self.viewport_width.lock().await;
         let mut vh = self.viewport_height.lock().await;
-        if *vw == width && *vh == height {
+        let mut vs = self.viewport_scale.lock().await;
+        if *vw == width && *vh == height && *vs == scale {
             return;
         }
         *vw = width;
         *vh = height;
+        *vs = scale;
         drop(vw);
         drop(vh);
+        drop(vs);
         self.client_notify.notify_one();
+    }
+
+    /// The device pixel ratio the screencast captures at. Multiply the CSS viewport by this to get the
+    /// screencast's `maxWidth`/`maxHeight` (see `viewport_scale`).
+    pub async fn viewport_scale(&self) -> f64 {
+        *self.viewport_scale.lock().await
     }
 
     /// Get the current viewport dimensions.
@@ -340,6 +374,7 @@ impl StreamServer {
         let cdp_session_id = Arc::new(RwLock::new(None::<String>));
         let viewport_width = Arc::new(Mutex::new(1280u32));
         let viewport_height = Arc::new(Mutex::new(720u32));
+        let viewport_scale = Arc::new(Mutex::new(1.0f64));
         let last_tabs = Arc::new(RwLock::new(Vec::<Value>::new()));
         let last_engine = Arc::new(RwLock::new("chrome".to_string()));
         let recording = Arc::new(Mutex::new(false));
@@ -391,6 +426,7 @@ impl StreamServer {
         let cdp_session_bg = cdp_session_id.clone();
         let vw_bg = viewport_width.clone();
         let vh_bg = viewport_height.clone();
+        let vscale_bg = viewport_scale.clone();
         let last_tabs_bg = last_tabs.clone();
         let last_engine_bg = last_engine.clone();
         let recording_bg = recording.clone();
@@ -408,6 +444,7 @@ impl StreamServer {
                 cdp_session_bg,
                 vw_bg,
                 vh_bg,
+                vscale_bg,
                 last_tabs_bg,
                 last_engine_bg,
                 recording_bg,
@@ -431,6 +468,7 @@ impl StreamServer {
                 screencasting,
                 viewport_width,
                 viewport_height,
+                viewport_scale,
                 last_tabs,
                 last_engine,
                 recording,
@@ -1327,5 +1365,31 @@ mod tests {
         );
 
         server.shutdown().await;
+    }
+}
+
+#[cfg(test)]
+mod capture_dims_tests {
+    use super::capture_dims;
+
+    #[test]
+    fn scales_the_cap_to_device_pixels() {
+        // The bug this guards: a 897x1269 CSS pane on a 2x display used to be captured at 897x1269 and
+        // then stretched over 1794x2538 physical pixels.
+        assert_eq!(capture_dims(897, 1269, 2.0), (1794, 2538));
+        assert_eq!(capture_dims(897, 1269, 1.0), (897, 1269));
+    }
+
+    #[test]
+    fn rounds_fractional_scales_and_never_yields_zero() {
+        assert_eq!(capture_dims(412, 915, 2.625), (1082, 2402));
+        assert_eq!(capture_dims(1, 1, 0.001), (1, 1));
+    }
+
+    #[test]
+    fn degenerate_scales_fall_back_to_one_x() {
+        assert_eq!(capture_dims(800, 600, 0.0), (800, 600));
+        assert_eq!(capture_dims(800, 600, -2.0), (800, 600));
+        assert_eq!(capture_dims(800, 600, f64::NAN), (800, 600));
     }
 }

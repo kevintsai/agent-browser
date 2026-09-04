@@ -1785,8 +1785,10 @@ impl BrowserManager {
             )
             .await?;
 
-        // Screencast captures the actual content area, not the emulated CSS
-        // viewport, so resize the content area to match.
+        // Screencast captures the actual content area, not the emulated CSS viewport, so resize the
+        // content area to match. **In CSS (DIP) pixels, not device pixels**: the compositor multiplies by
+        // the device scale factor itself. Passing device pixels makes the surface `scale` times too large
+        // and the emulated page renders into its top-left corner, so the capture is mostly blank.
         if let Ok(target_id) = self.active_target_id() {
             if let Ok(window_info) = self
                 .client

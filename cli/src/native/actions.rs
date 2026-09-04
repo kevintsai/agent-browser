@@ -2494,7 +2494,8 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
                                 continue; // nobody watching right now → skip (resume if a client attaches)
                             }
                             let (vw, vh) = server.viewport().await;
-                            let _ = force_repaint(&client, &sid, vw, vh).await;
+                            let scale = server.viewport_scale().await;
+                            let _ = force_repaint(&client, &sid, vw, vh, scale).await;
                         }
                     });
                 }
@@ -5974,7 +5975,10 @@ async fn handle_tab_switch(cmd: &Value, state: &mut DaemonState) -> Result<Value
                 if let Some(s) = dims.get("result").and_then(|v| v.as_str()) {
                     if let Ok(arr) = serde_json::from_str::<Vec<u32>>(s) {
                         if arr.len() == 2 && arr[0] > 0 && arr[1] > 0 {
-                            server.set_viewport(arr[0], arr[1]).await;
+                            // Re-reading window.innerWidth/Height only refreshes the CSS size; keep the
+                            // scale already in effect or the screencast silently drops back to 1x.
+                            let scale = server.viewport_scale().await;
+                            server.set_viewport(arr[0], arr[1], scale).await;
                         }
                     }
                 }
@@ -6014,9 +6018,12 @@ async fn handle_viewport(cmd: &Value, state: &mut DaemonState) -> Result<Value, 
 
     state.viewport = Some((width, height, scale, mobile));
 
-    // Update stream server viewport so status messages and screencast use the new dimensions
+    // Update stream server viewport so status messages and screencast use the new dimensions. The scale
+    // goes with them: the screencast caps at DEVICE pixels, so dropping it here caps a 2x page back to 1x.
     if let Some(ref server) = state.stream_server {
-        server.set_viewport(width as u32, height as u32).await;
+        server
+            .set_viewport(width as u32, height as u32, scale)
+            .await;
     }
 
     Ok(json!({ "width": width, "height": height, "deviceScaleFactor": scale, "mobile": mobile }))
@@ -7425,7 +7432,9 @@ async fn handle_device(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
 
     // Update stream server viewport so status messages and screencast use the new dimensions
     if let Some(ref server) = state.stream_server {
-        server.set_viewport(width as u32, height as u32).await;
+        server
+            .set_viewport(width as u32, height as u32, scale)
+            .await;
     }
 
     Ok(json!({
@@ -7621,9 +7630,13 @@ async fn force_repaint(
     session_id: &str,
     vw: u32,
     vh: u32,
+    scale: f64,
 ) -> Result<(), String> {
     let _ = stream::stop_screencast(client, session_id).await;
-    stream::start_screencast(client, session_id, "jpeg", 80, vw as i32, vh as i32).await
+    // Same DEVICE-pixel cap as the streaming path — a 1x forced frame would land as a blurry flash on a
+    // Retina viewer and stay until the page repaints on its own.
+    let (cap_w, cap_h) = stream::capture_dims_for(vw, vh, scale);
+    stream::start_screencast(client, session_id, "jpeg", 80, cap_w as i32, cap_h as i32).await
 }
 
 /// `stream_refresh`: on-demand force one frame (fleetmux `browser-pane.refresh-frame` → panel `r`). No-op
@@ -7644,7 +7657,8 @@ async fn handle_stream_refresh(state: &DaemonState) -> Result<Value, String> {
     }
     let session_id = mgr.active_session_id()?.to_string();
     let (vw, vh) = server.viewport().await;
-    force_repaint(&mgr.client, &session_id, vw, vh).await?;
+    let scale = server.viewport_scale().await;
+    force_repaint(&mgr.client, &session_id, vw, vh, scale).await?;
     Ok(json!({ "refreshed": true }))
 }
 
@@ -7660,9 +7674,11 @@ async fn handle_screencast_start(cmd: &Value, state: &mut DaemonState) -> Result
         return Err("Screencast already active".to_string());
     }
 
-    // Use stored viewport as default for screencast dimensions
+    // Use stored viewport as default for screencast dimensions. Defaults are DEVICE pixels (the caller's
+    // explicit maxWidth/maxHeight are taken as given).
     let (default_w, default_h) = if let Some(ref server) = state.stream_server {
-        server.viewport().await
+        let (w, h) = server.viewport().await;
+        stream::capture_dims_for(w, h, server.viewport_scale().await)
     } else {
         (1280, 720)
     };
@@ -8729,9 +8745,9 @@ async fn handle_window_new(cmd: &Value, state: &mut DaemonState) -> Result<Value
         let mgr = state.browser.as_mut().ok_or("Browser not launched")?;
         mgr.set_viewport(width, height, 1.0, false).await?;
 
-        // Update stream server viewport
+        // Update stream server viewport (this path emulates at 1x, so the capture cap is 1x too)
         if let Some(ref server) = state.stream_server {
-            server.set_viewport(width as u32, height as u32).await;
+            server.set_viewport(width as u32, height as u32, 1.0).await;
         }
     }
 

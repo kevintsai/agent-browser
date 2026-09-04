@@ -20,6 +20,7 @@ pub(super) async fn cdp_event_loop(
     cdp_session_id: Arc<RwLock<Option<String>>>,
     viewport_width: Arc<Mutex<u32>>,
     viewport_height: Arc<Mutex<u32>>,
+    viewport_scale: Arc<Mutex<f64>>,
     last_frame: Arc<RwLock<Option<String>>>,
     last_tabs: Arc<RwLock<Vec<Value>>>,
     last_engine: Arc<RwLock<String>>,
@@ -59,19 +60,25 @@ pub(super) async fn cdp_event_loop(
 
                 let vw = *viewport_width.lock().await;
                 let vh = *viewport_height.lock().await;
+                let vscale = *viewport_scale.lock().await;
 
                 let eng = last_engine.read().await.clone();
                 let supports_screencast = eng == "chrome";
 
                 if supports_screencast {
+                    // `maxWidth`/`maxHeight` are DEVICE pixels: the compositor surface is the CSS viewport
+                    // times `deviceScaleFactor`, and Chrome downscales the capture to fit the cap. Capping
+                    // at the CSS size therefore throws away a Retina client's extra resolution — the client
+                    // then upscales a 1x image and every glyph goes soft.
+                    let (cap_w, cap_h) = super::capture_dims(vw, vh, vscale);
                     let _ = client_arc
                         .send_command(
                             "Page.startScreencast",
                             Some(json!({
                                 "format": "jpeg",
                                 "quality": 80,
-                                "maxWidth": vw,
-                                "maxHeight": vh,
+                                "maxWidth": cap_w,
+                                "maxHeight": cap_h,
                                 "everyNthFrame": 1,
                             })),
                             session_id.as_deref(),
@@ -243,7 +250,9 @@ pub(super) async fn cdp_event_loop(
                             let session_changed = new_session_id != session_id;
                             let new_vw = *viewport_width.lock().await;
                             let new_vh = *viewport_height.lock().await;
-                            let viewport_changed = new_vw != vw || new_vh != vh;
+                            let new_vscale = *viewport_scale.lock().await;
+                            let viewport_changed =
+                                new_vw != vw || new_vh != vh || new_vscale != vscale;
                             if client_changed || session_changed || viewport_changed {
                                 if supports_screencast {
                                     let _ = client_arc

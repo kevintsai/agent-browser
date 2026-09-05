@@ -4077,7 +4077,8 @@ fn print_screenshot_diff(data: &serde_json::Map<String, serde_json::Value>) {
 }
 
 /// Build marker for the fleetmux self-maintained fork (byte-identical to the official release except the
-/// `stream refresh` / navigate-repaint patch and the device-pixel screencast cap).
+/// `stream refresh` / navigate-repaint patch, the device-pixel screencast cap, and the page-tool (CDP
+/// `WebMCP`) events pushed onto the stream).
 ///
 /// **Bump this on every behaviour-changing fork patch.** fleetmux compares it against each live daemon's
 /// `.build` sidecar and only reaps + respawns daemons whose build differs — leave it alone and a
@@ -4085,7 +4086,7 @@ fn print_screenshot_diff(data: &serde_json::Map<String, serde_json::Value>) {
 /// `CARGO_PKG_VERSION` stays clean semver (daemon↔CLI compat check in `connection.rs`, the `.version` file,
 /// and wire/MCP `version` JSON all rely on an exact match). Lets `agent-browser --version` reveal at a glance
 /// that PATH is the fork, not a stray official 0.32.3.
-pub const FORK_VERSION_MARKER: &str = "+fleetmux.6";
+pub const FORK_VERSION_MARKER: &str = "+fleetmux.7";
 
 /// The fork build id: `CARGO_PKG_VERSION` + [`FORK_VERSION_MARKER`] (e.g. `0.32.3+fleetmux`). Single source of
 /// truth shared by `--version` (below) and the `<session>.build` sidecar the daemon writes (`native/daemon.rs`).

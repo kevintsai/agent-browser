@@ -5,11 +5,11 @@ mod discovery;
 mod http;
 mod websocket;
 
+pub use capture_dims as capture_dims_for;
 pub use cdp_loop::{ack_screencast_frame, start_screencast, stop_screencast};
 pub use dashboard::{
     is_valid_dashboard_access_token, normalize_dashboard_allowed_origins, run_dashboard_server,
 };
-pub use capture_dims as capture_dims_for;
 
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -167,7 +167,11 @@ impl IdleActivity {
 /// `Browser.setContentsSize` stays in CSS pixels — feeding it device pixels makes the surface twice the
 /// size it should be, and the page renders into its top-left corner.
 pub fn capture_dims(width: u32, height: u32, scale: f64) -> (u32, u32) {
-    let s = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    let s = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
     let w = ((width as f64) * s).round().max(1.0) as u32;
     let h = ((height as f64) * s).round().max(1.0) as u32;
     (w, h)

@@ -941,6 +941,8 @@ mod tests {
             cdp_session_id.clone(),
             Arc::new(Mutex::new(1280)),
             Arc::new(Mutex::new(720)),
+            // fork: capture scale (see `capture_dims`); 1.0 keeps upstream's CSS-pixel behaviour.
+            Arc::new(Mutex::new(1.0f64)),
             last_tabs.clone(),
             Arc::new(RwLock::new(engine.to_string())),
             Arc::new(Mutex::new(false)),
@@ -1367,6 +1369,8 @@ mod tests {
             Arc::new(RwLock::new(Some("S-ACTIVE".to_string()))),
             Arc::new(Mutex::new(1280)),
             Arc::new(Mutex::new(720)),
+            // fork: capture scale (see `capture_dims`); 1.0 keeps upstream's CSS-pixel behaviour.
+            Arc::new(Mutex::new(1.0f64)),
             Arc::new(RwLock::new(Vec::new())),
             Arc::new(RwLock::new("chrome".to_string())),
             Arc::new(Mutex::new(false)),
